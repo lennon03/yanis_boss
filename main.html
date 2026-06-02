@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Space Invader BOSS - Dupont Jean / Martin Alice - Classe 3A</title>
+    <style>
+      :root {
+        --neon: #00eaff;
+        --neon2: #ff2d75;
+        --bg: #05060f;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: radial-gradient(circle at 50% 20%, #131a3a 0%, var(--bg) 70%);
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        color: #e8ecff;
+        overflow: hidden;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        background: linear-gradient(90deg, var(--neon), var(--neon2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 0 18px rgba(0, 234, 255, 0.4);
+      }
+
+      .game-wrap {
+        position: relative;
+        border-radius: 16px;
+        padding: 4px;
+        background: linear-gradient(135deg, var(--neon), var(--neon2));
+        box-shadow: 0 0 40px rgba(0, 234, 255, 0.35),
+          0 0 80px rgba(255, 45, 117, 0.2);
+      }
+
+      canvas {
+        display: block;
+        border-radius: 12px;
+        background: #02030a;
+      }
+
+      .hint {
+        font-size: 0.85rem;
+        opacity: 0.7;
+        letter-spacing: 1px;
+      }
+
+      .hint kbd {
+        background: #1b2147;
+        border: 1px solid #3a4488;
+        border-radius: 5px;
+        padding: 2px 8px;
+        margin: 0 2px;
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>👾 Space Invader — BOSS</h1>
+    <div class="game-wrap">
+      <canvas id="jeu" width="600" height="600"></canvas>
+    </div>
+    <p class="hint">
+      <kbd>←</kbd> <kbd>→</kbd> se déplacer &nbsp;•&nbsp; <kbd>Espace</kbd> tirer
+      &nbsp;•&nbsp; <kbd>R</kbd> rejouer
+    </p>
+
+    <script>
+      const canvas = document.getElementById("jeu");
+      const ctx = canvas.getContext("2d");
+      const LARGEUR = canvas.width;
+      const HAUTEUR = canvas.height;
+
+      // ---------- ÉTAT DU JEU ----------
+      let etat;
+
+      function nouvelEtat() {
+        return {
+          vaisseau: { x: 300, y: 525, w: 50, h: 50 },
+          projectiles: [],
+          bombes: [],
+          bonus: null,
+
+          // BOSS
+          boss: { x: LARGEUR / 2 - 64, y: 60, taille: 128 },
+          vieBoss: 100,
+          vieBossMax: 100,
+          modeBoss: "normal", // "normal" ou "cercle"
+          chronoMode: 0,
+          dureeMode: 250,
+          directionBoss: 1,
+          vitesseBoss: 3,
+          angleBoss: 0,
+          centreCercle: { x: LARGEUR / 2, y: 150 },
+          rayonCercle: 150,
+
+          score: 0,
+          projectilesRestants: 200,
+          vies: 3,
+          delaiTir: 0,
+
+          etoiles: creerEtoiles(),
+
+          jeuTermine: false,
+          victoire: false,
+        };
+      }
+
+      function creerEtoiles() {
+        const arr = [];
+        for (let i = 0; i < 120; i++) {
+          arr.push({
+            x: Math.random() * LARGEUR,
+            y: Math.random() * HAUTEUR,
+            t: Math.random() * 1.5 + 0.5, // taille / vitesse
+          });
+        }
+        return arr;
+      }
+
+      // ---------- GESTION CLAVIER ----------
+      const touches = {};
+      document.addEventListener("keydown", (e) => {
+        touches[e.code] = true;
+        if (e.code === "Space") e.preventDefault();
+        if (e.code === "KeyR" && etat.jeuTermine) etat = nouvelEtat();
+      });
+      document.addEventListener("keyup", (e) => (touches[e.code] = false));
+
+      // ---------- SONS (générés avec Web Audio, pas de fichiers) ----------
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const audio = new AudioCtx();
+      function bip(freq, duree, type = "square") {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.08, audio.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + duree);
+        osc.connect(gain).connect(audio.destination);
+        osc.start();
+        osc.stop(audio.currentTime + duree);
+      }
+      const sonTir = () => bip(880, 0.08, "square");
+      const sonExplosion = () => bip(120, 0.2, "sawtooth");
+
+      // ---------- LOGIQUE ----------
+      function gererClavier() {
+        const v = etat.vaisseau;
+        if (touches["ArrowRight"] && v.x < LARGEUR - v.w) v.x += 5;
+        if (touches["ArrowLeft"] && v.x > 0) v.x -= 5;
+
+        if (
+          touches["Space"] &&
+          etat.delaiTir <= 0 &&
+          etat.projectilesRestants > 0
+        ) {
+          etat.projectiles.push({ x: v.x + v.w / 2, y: v.y });
+          etat.projectilesRestants--;
+          etat.delaiTir = 8;
+          sonTir();
+        }
+      }
+
+      function deplacerProjectiles() {
+        etat.projectiles = etat.projectiles.filter((p) => {
+          p.y -= 9;
+          return p.y > 0;
+        });
+      }
+
+      function deplacerBoss() {
+        if (etat.vieBoss <= 0) return;
+        const b = etat.boss;
+
+        etat.chronoMode++;
+        if (etat.chronoMode >= etat.dureeMode) {
+          etat.chronoMode = 0;
+          etat.modeBoss = etat.modeBoss === "normal" ? "cercle" : "normal";
+          if (etat.modeBoss === "cercle") etat.angleBoss = 0;
+        }
+
+        if (etat.modeBoss === "normal") {
+          b.x += etat.directionBoss * etat.vitesseBoss;
+          if (b.x <= 0 || b.x >= LARGEUR - b.taille) {
+            etat.directionBoss *= -1;
+            b.x = Math.max(0, Math.min(b.x, LARGEUR - b.taille));
+          }
+        } else {
+          etat.angleBoss += 0.05;
+          const c = etat.centreCercle;
+          b.x = c.x + Math.cos(etat.angleBoss) * etat.rayonCercle - b.taille / 2;
+          b.y = c.y + Math.sin(etat.angleBoss) * (etat.rayonCercle / 2);
+        }
+      }
+
+      function collisionsProjectiles() {
+        if (etat.vieBoss <= 0) return;
+        const b = etat.boss;
+        etat.projectiles = etat.projectiles.filter((p) => {
+          const touche =
+            p.x >= b.x &&
+            p.x <= b.x + b.taille &&
+            p.y >= b.y &&
+            p.y <= b.y + b.taille;
+          if (touche) {
+            etat.vieBoss--;
+            etat.score++;
+            sonExplosion();
+            if (etat.vieBoss <= 0) {
+              etat.jeuTermine = true;
+              etat.victoire = true;
+            }
+          }
+          return !touche;
+        });
+      }
+
+      function deplacerEtoiles() {
+        for (const e of etat.etoiles) {
+          e.y += e.t;
+          if (e.y >= HAUTEUR) {
+            e.y = 0;
+            e.x = Math.random() * LARGEUR;
+          }
+        }
+      }
+
+      function gererBombes() {
+        const b = etat.boss;
+        if (etat.vieBoss > 0 && Math.random() < 0.04) {
+          etat.bombes.push({ x: b.x + b.taille / 2, y: b.y + b.taille });
+        }
+        const v = etat.vaisseau;
+        etat.bombes = etat.bombes.filter((bo) => {
+          bo.y += 6;
+          const touche =
+            bo.x >= v.x && bo.x <= v.x + v.w && bo.y >= v.y && bo.y <= v.y + v.h;
+          if (touche) {
+            etat.vies--;
+            if (etat.vies <= 0) {
+              etat.jeuTermine = true;
+              etat.victoire = false;
+            }
+            return false;
+          }
+          return bo.y < HAUTEUR;
+        });
+      }
+
+      function gererBonus() {
+        if (!etat.bonus && Math.random() < 0.004) {
+          etat.bonus = { x: Math.random() * (LARGEUR - 20), y: 0 };
+        }
+        if (etat.bonus) {
+          etat.bonus.y += 3;
+          const v = etat.vaisseau;
+          const bo = etat.bonus;
+          const pris =
+            bo.x + 10 >= v.x &&
+            bo.x + 10 <= v.x + v.w &&
+            bo.y + 20 >= v.y &&
+            bo.y + 20 <= v.y + v.h;
+          if (pris) {
+            etat.projectilesRestants = 200;
+            etat.bonus = null;
+          } else if (bo.y > HAUTEUR) {
+            etat.bonus = null;
+          }
+        }
+      }
+
+      // ---------- DESSIN ----------
+      function dessinerVaisseau() {
+        const v = etat.vaisseau;
+        const x = v.x + v.w / 2;
+        ctx.save();
+        ctx.fillStyle = "#00eaff";
+        ctx.shadowColor = "#00eaff";
+        ctx.shadowBlur = 15;
+        ctx.beginPath();
+        ctx.moveTo(x, v.y);
+        ctx.lineTo(v.x + v.w, v.y + v.h);
+        ctx.lineTo(v.x, v.y + v.h);
+        ctx.closePath();
+        ctx.fill();
+        // cockpit
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(x, v.y + v.h * 0.55, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function dessinerBoss() {
+        if (etat.vieBoss <= 0) return;
+        const b = etat.boss;
+        const cx = b.x + b.taille / 2;
+        const cy = b.y + b.taille / 2;
+        ctx.save();
+        ctx.shadowColor = "#ff2d75";
+        ctx.shadowBlur = 25;
+        // corps
+        ctx.fillStyle = "#ff2d75";
+        ctx.beginPath();
+        ctx.arc(cx, cy, b.taille / 2.4, 0, Math.PI * 2);
+        ctx.fill();
+        // yeux
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(cx - 25, cy - 10, 12, 0, Math.PI * 2);
+        ctx.arc(cx + 25, cy - 10, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#02030a";
+        ctx.beginPath();
+        ctx.arc(cx - 25, cy - 10, 5, 0, Math.PI * 2);
+        ctx.arc(cx + 25, cy - 10, 5, 0, Math.PI * 2);
+        ctx.fill();
+        // bouche
+        ctx.strokeStyle = "#02030a";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + 20, 22, 0, Math.PI);
+        ctx.stroke();
+        ctx.restore();
+
+        // barre de vie
+        const lw = b.taille;
+        ctx.fillStyle = "#5a0018";
+        ctx.fillRect(b.x, b.y - 16, lw, 9);
+        ctx.fillStyle = "#00ff88";
+        ctx.fillRect(b.x, b.y - 16, lw * (etat.vieBoss / etat.vieBossMax), 9);
+      }
+
+      function dessinerHUD() {
+        ctx.fillStyle = "#e8ecff";
+        ctx.font = "20px Segoe UI";
+        ctx.textAlign = "left";
+        ctx.fillText("Score : " + etat.score, 12, 28);
+        ctx.fillText("Projectiles : " + etat.projectilesRestants, 12, 54);
+        ctx.fillText("Vies : " + "❤".repeat(Math.max(0, etat.vies)), 12, 80);
+      }
+
+      function dessiner() {
+        ctx.fillStyle = "#02030a";
+        ctx.fillRect(0, 0, LARGEUR, HAUTEUR);
+
+        // étoiles
+        for (const e of etat.etoiles) {
+          ctx.globalAlpha = 0.4 + e.t / 3;
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(e.x, e.y, e.t, e.t);
+        }
+        ctx.globalAlpha = 1;
+
+        dessinerVaisseau();
+        dessinerBoss();
+
+        // projectiles
+        ctx.fillStyle = "#00eaff";
+        ctx.shadowColor = "#00eaff";
+        ctx.shadowBlur = 10;
+        for (const p of etat.projectiles) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+
+        // bombes
+        ctx.fillStyle = "#ff3b3b";
+        for (const b of etat.bombes) {
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // bonus
+        if (etat.bonus) {
+          ctx.fillStyle = "#00ff88";
+          ctx.shadowColor = "#00ff88";
+          ctx.shadowBlur = 12;
+          ctx.fillRect(etat.bonus.x, etat.bonus.y, 20, 20);
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = "#02030a";
+          ctx.font = "bold 16px Segoe UI";
+          ctx.fillText("+", etat.bonus.x + 6, etat.bonus.y + 15);
+        }
+
+        dessinerHUD();
+
+        if (etat.jeuTermine) {
+          ctx.fillStyle = "rgba(0,0,0,0.65)";
+          ctx.fillRect(0, 0, LARGEUR, HAUTEUR);
+          ctx.textAlign = "center";
+          ctx.font = "bold 56px Segoe UI";
+          ctx.fillStyle = etat.victoire ? "#00ff88" : "#ff2d75";
+          ctx.fillText(
+            etat.victoire ? "VICTOIRE !" : "GAME OVER",
+            LARGEUR / 2,
+            HAUTEUR / 2
+          );
+          ctx.font = "20px Segoe UI";
+          ctx.fillStyle = "#e8ecff";
+          ctx.fillText(
+            "Appuie sur R pour rejouer",
+            LARGEUR / 2,
+            HAUTEUR / 2 + 45
+          );
+        }
+      }
+
+      // ---------- BOUCLE PRINCIPALE ----------
+      function boucle() {
+        if (!etat.jeuTermine) {
+          if (etat.delaiTir > 0) etat.delaiTir--;
+          gererClavier();
+          deplacerProjectiles();
+          deplacerBoss();
+          collisionsProjectiles();
+          deplacerEtoiles();
+          gererBombes();
+          gererBonus();
+
+          // défaite si plus de munitions et boss vivant
+          if (
+            etat.projectilesRestants <= 0 &&
+            etat.projectiles.length === 0 &&
+            etat.vieBoss > 0
+          ) {
+            etat.jeuTermine = true;
+            etat.victoire = false;
+          }
+        }
+        dessiner();
+        requestAnimationFrame(boucle);
+      }
+
+      etat = nouvelEtat();
+      boucle();
+    </script>
+  </body>
+</html>
